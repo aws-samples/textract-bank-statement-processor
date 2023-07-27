@@ -1,0 +1,436 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: The AWS CloudFormation template for the statement processing pipeline
+
+Parameters:
+  Stage:
+    Type: String
+    Description: The deployment stage
+  BucketPostfix:
+    Type: String
+    Description: A postfix to ensure uniqueness of bucket naming
+  DeploymentBucket:
+    Type: String
+    Description: Name of the bucket containing the lambda deployment package zip
+Resources:
+  StartStateMachineLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/statement-insight-${Stage}-startStateMachine'
+  RestAPILogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/statement-insight-${Stage}-restAPI'
+  StartJobLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/statement-insight-${Stage}-startJob'
+  GetResultsLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/statement-insight-${Stage}-getResults'
+  IamRoleLambdaExecution:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Join 
+            - '-'
+            - - statement-insight
+              - lambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:TagResource'
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/statement-insight-${Stage}*
+              - Effect: Allow
+                Action:
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/statement-insight-${Stage}*
+              - Effect: Allow
+                Action:
+                  - 'textract:StartDocumentTextDetection'
+                  - 'textract:StartDocumentAnalysis'
+                  - 'textract:GetDocumentTextDetection'
+                  - 'textract:GetDocumentAnalysis'
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource:
+                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ProcessPDFStepFunction-${Stage}'
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::statement-insight-${BucketPostfix}'
+                  - !Sub 'arn:aws:s3:::statement-insight-${BucketPostfix}/*'
+                  - !Sub 'arn:aws:s3:::statement-insight-${BucketPostfix}-output'
+                  - !Sub 'arn:aws:s3:::statement-insight-${BucketPostfix}-output/*'
+      Path: /
+      RoleName: !Join 
+        - '-'
+        - - statement-insight
+          - !Sub '${Stage}'
+          - !Ref 'AWS::Region'
+          - lambdaRole
+  StartStateMachineLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub '${DeploymentBucket}'
+        S3Key: >-
+          statement-insight.zip
+      Handler: src/inputHandler.handle
+      Runtime: python3.10
+      FunctionName: !Sub 'statement-insight-${Stage}-startStateMachine'
+      MemorySize: 1024
+      Timeout: 600
+      Environment:
+        Variables:
+          statemachine_arn: !Ref ProcessPDFStepFunction
+          OUTPUT_BUCKET: !Sub 'statement-insight-${BucketPostfix}-output'
+          OUTPUT_PREFIX: output
+      Role: !GetAtt 
+        - IamRoleLambdaExecution
+        - Arn
+    DependsOn:
+      - StartStateMachineLogGroup
+  RestAPILambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub '${DeploymentBucket}'
+        S3Key: >-
+          statement-insight.zip
+      Handler: src/apiRequestHandler.handle
+      Runtime: python3.10
+      FunctionName: !Sub 'statement-insight-${Stage}-restAPI'
+      MemorySize: 1024
+      Timeout: 6
+      Environment:
+        Variables:
+          DATA_BUCKET: !Sub 'statement-insight-${BucketPostfix}-output'
+      Role: !GetAtt 
+        - IamRoleLambdaExecution
+        - Arn
+    DependsOn:
+      - RestAPILogGroup
+  StartJobLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub '${DeploymentBucket}'
+        S3Key: >-
+          statement-insight.zip
+      Handler: src/startJob.handle
+      Runtime: python3.10
+      FunctionName: !Sub statement-insight-${Stage}-startJob
+      MemorySize: 1024
+      Timeout: 600
+      Role: !GetAtt 
+        - IamRoleLambdaExecution
+        - Arn
+    DependsOn:
+      - StartJobLogGroup
+  GetResultsLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub '${DeploymentBucket}'
+        S3Key: >-
+          statement-insight.zip
+      Handler: src/getResults.handle
+      Runtime: python3.10
+      FunctionName: !Sub 'statement-insight-${Stage}-getResults'
+      MemorySize: 1024
+      Timeout: 600
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Sub 'statement-insight-${BucketPostfix}-output'
+          OUTPUT_PREFIX: output
+      Role: !GetAtt 
+        - IamRoleLambdaExecution
+        - Arn
+    DependsOn:
+      - GetResultsLogGroup
+  ProcessPDFStepFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'states.${AWS::Region}.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Sub '${Stage}-statement-insight-statemachine'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !Sub >-
+                    arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:statement-insight-${Stage}-startJob
+                  - !Sub 
+                    - '${functionArn}:*'
+                    - functionArn: !Sub >-
+                        arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:statement-insight-${Stage}-startJob
+                  - !Sub >-
+                    arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:statement-insight-${Stage}-getResults
+                  - !Sub 
+                    - '${functionArn}:*'
+                    - functionArn: !Sub >-
+                        arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:statement-insight-${Stage}-getResults
+  ProcessPDFStepFunction:
+    Type: 'AWS::StepFunctions::StateMachine'
+    Properties:
+      DefinitionString: !Sub 
+        - |-
+          {
+            "StartAt": "StartJob",
+            "States": {
+              "StartJob": {
+                "Type": "Task",
+                "Resource": "${startJobLambdaArn}",
+                "Next": "Wait"
+              },
+              "Wait": {
+                "Type": "Wait",
+                "Seconds": 5,
+                "Next": "GetResults"
+              },
+              "GetResults": {
+                "Type": "Task",
+                "Resource": "${getResultsLambdaArn}",
+                "Next": "IsJobDone"
+              },
+              "IsJobDone": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.job_status",
+                    "StringEquals": "IN_PROGRESS",
+                    "Next": "Wait"
+                  },
+                  {
+                    "Variable": "$.job_status",
+                    "StringEquals": "SUCCEEDED",
+                    "Next": "Success"
+                  }
+                ]
+              },
+              "Success": {
+                "Type": "Succeed"
+              }
+            }
+          }
+        - startJobLambdaArn: !Sub >-
+            arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:statement-insight-${Stage}-startJob
+          getResultsLambdaArn: !Sub >-
+            arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:statement-insight-${Stage}-getResults
+      RoleArn: !GetAtt 
+        - ProcessPDFStepFunctionRole
+        - Arn
+      StateMachineName: !Sub "ProcessPDFStepFunction-${Stage}"
+    DependsOn:
+      - ProcessPDFStepFunctionRole
+  S3BucketStatementinsightOutput:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub "statement-insight-${BucketPostfix}-output"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  S3BucketStatementinsight:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub "statement-insight-${BucketPostfix}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt 
+              - StartStateMachineLambdaFunction
+              - Arn
+    DependsOn:
+      - StartStateMachineLambdaPermissionStatementinsight
+  StartStateMachineLambdaPermissionStatementinsight:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt 
+        - StartStateMachineLambdaFunction
+        - Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:'
+          - !Ref 'AWS::Partition'
+          - !Sub ':s3:::statement-insight-${BucketPostfix}'
+      SourceAccount: !Ref 'AWS::AccountId'
+  ApiGatewayRestApi:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub "${Stage}-statement-insight"
+      EndpointConfiguration:
+        Types:
+          - EDGE
+      Policy: ''
+  ApiGatewayMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+          ResponseModels: {}
+      RequestParameters: {}
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{statusCode:200}'
+        ContentHandling: CONVERT_TO_TEXT
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent,X-Amzn-Trace-Id'
+              method.response.header.Access-Control-Allow-Methods: '''OPTIONS,DELETE,GET,HEAD,PATCH,POST,PUT'''
+            ResponseTemplates:
+              application/json: ''
+      ResourceId: !GetAtt 
+        - ApiGatewayRestApi
+        - RootResourceId
+      RestApiId: !Ref ApiGatewayRestApi
+  ApiGatewayMethodAny:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: ANY
+      RequestParameters: {}
+      ResourceId: !GetAtt 
+        - ApiGatewayRestApi
+        - RootResourceId
+      RestApiId: !Ref ApiGatewayRestApi
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Join 
+          - ''
+          - - 'arn:'
+            - !Ref 'AWS::Partition'
+            - ':apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - RestAPILambdaFunction
+              - Arn
+            - /invocations
+      MethodResponses: []
+    DependsOn:
+      - RestAPILambdaPermissionApiGateway
+  ApiGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Sub "${Stage}"
+    DependsOn:
+      - ApiGatewayMethodOptions
+      - ApiGatewayMethodAny
+  ApiGatewayApiKey:
+    Type: 'AWS::ApiGateway::ApiKey'
+    Properties:
+      Enabled: true
+      Name: !Sub "statement-insight-key-${Stage}"
+      StageKeys:
+        - RestApiId: !Ref ApiGatewayRestApi
+          StageName: !Sub "${Stage}"
+    DependsOn: ApiGatewayDeployment
+  ApiGatewayUsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    DependsOn: ApiGatewayDeployment
+    Properties:
+      ApiStages:
+        - ApiId: !Ref ApiGatewayRestApi
+          Stage: !Sub "${Stage}"
+      Description: !Sub "Usage plan for statement-insight ${Stage} stage"
+      UsagePlanName: !Sub "statement-insight-${Stage}"
+  ApiGatewayUsagePlanKey:
+    Type: 'AWS::ApiGateway::UsagePlanKey'
+    Properties:
+      KeyId: !Ref ApiGatewayApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiGatewayUsagePlan
+  RestAPILambdaPermissionApiGateway:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt 
+        - RestAPILambdaFunction
+        - Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:'
+          - !Ref 'AWS::Partition'
+          - ':execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref ApiGatewayRestApi
+          - /*/*
+Outputs:
+  LandingBucket:
+    Description: The landing bucket to upload data to to be processed
+    Value: !Sub "statement-insight-${BucketPostfix}"
+  CLIApiKey:
+    Description: CLI command to get the api key value.
+    Value: !Sub "aws apigateway get-api-key --api-key ${ApiGatewayApiKey.APIKeyId} --include-value --query \"value\" --output text"
+  ServiceEndpoint:
+    Description: URL of the service endpoint
+    Value: !Join 
+      - ''
+      - - 'https://'
+        - !Ref ApiGatewayRestApi
+        - .execute-api.
+        - !Ref 'AWS::Region'
+        - .
+        - !Ref 'AWS::URLSuffix'
+        - !Sub "/${Stage}"
+
+

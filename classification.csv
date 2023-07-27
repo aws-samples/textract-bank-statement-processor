@@ -1,0 +1,27 @@
+key,type,subtype
+paypal,Online,Paypal
+subway,Entertainment,Eating out
+noodle & sushi,Entertainment,Eating out
+vic roads,Transport,Car
+citylink,Transport,Toll
+pizza,Entertainment,Eating out
+wage,Employment,Acme Corporation
+bp,Transport,Petrol
+red rooster,Entertainment,Eating out
+7-eleven,Groceries,7-Eleven
+belmont wines,Entertainment,Liquor
+beatie service,Transport,Car
+kfc,Entertainment,Eating out
+telstra,Utilities,Mobile
+wdl,Cash,ATM
+safeway,Groceries,Safeway
+picture box,Home,Artwork
+salvos,Clothing,Salvos
+cignall,Entertainment,Tobacco
+sw petrol,Transport,Petrol
+service centre,Transport,Car
+coles,Groceries,Coles
+kmart,Home,KMart
+bunnings,Home,Bunnings
+fee,Fees,Transaction fee
+transfer,Transfer,Internal Transfer
